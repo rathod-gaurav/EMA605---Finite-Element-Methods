@@ -149,72 +149,100 @@ Eigen::MatrixXf extractSubmatrix(const Eigen::MatrixXf& OriginalMatrix , const v
 }
 
 template <unsigned int Nne>
-void writeVTK(
+void write_vtu(
     const std::string& filename,
-    int Nt,
-    int Nel_t,
     const std::vector<Node>& nodes,
     const std::vector<Element<Nne>>& elements,
-    const Eigen::VectorXf& D_full
+    const Eigen::VectorXf& displacement   // size = 3*Nnodes
 )
 {
-    std::ofstream vtk(filename);
+    std::ofstream file(filename);
 
-    if (!vtk.is_open()) {
-        std::cerr << "Error opening VTK file.\n";
-        return;
-    }
+    int Nnodes = nodes.size();
+    int Nelems = elements.size();
 
-    vtk << "# vtk DataFile Version 3.0\n";
-    vtk << "3D Elasticity Solution\n";
-    vtk << "ASCII\n";
-    vtk << "DATASET UNSTRUCTURED_GRID\n\n";
+    file << "<?xml version=\"1.0\"?>\n";
+    file << "<VTKFile type=\"UnstructuredGrid\" version=\"0.1\" byte_order=\"LittleEndian\">\n";
+    file << "<UnstructuredGrid>\n";
+    file << "<Piece NumberOfPoints=\"" << Nnodes 
+         << "\" NumberOfCells=\"" << Nelems << "\">\n";
 
-    // -------------------------
+    // ---------------------
     // POINTS
-    // -------------------------
-    vtk << "POINTS " << Nt << " float\n";
-    for (int i = 0; i < Nt; i++) {
-        vtk << nodes[i].x1 << " "
-            << nodes[i].x2 << " "
-            << nodes[i].x3 << "\n";
+    // ---------------------
+    file << "<Points>\n";
+    file << "<DataArray type=\"Float32\" NumberOfComponents=\"3\" format=\"ascii\">\n";
+
+    for (int i = 0; i < Nnodes; ++i)
+        file << nodes[i].x1 << " "
+             << nodes[i].x2 << " "
+             << nodes[i].x3 << "\n";
+
+    file << "</DataArray>\n</Points>\n";
+
+    // ---------------------
+    // CELLS (Hex = VTK type 12)
+    // ---------------------
+    file << "<Cells>\n";
+
+    // connectivity
+    file << "<DataArray type=\"Int32\" Name=\"connectivity\" format=\"ascii\">\n";
+    for (int e = 0; e < Nelems; ++e)
+        for (int A = 0; A < 8; ++A)
+            file << elements[e].node[A] << " ";
+    file << "\n</DataArray>\n";
+
+    // offsets
+    file << "<DataArray type=\"Int32\" Name=\"offsets\" format=\"ascii\">\n";
+    for (int e = 0; e < Nelems; ++e)
+        file << (e+1)*8 << " ";
+    file << "\n</DataArray>\n";
+
+    // types (12 = hexahedron)
+    file << "<DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">\n";
+    for (int e = 0; e < Nelems; ++e)
+        file << 12 << " ";
+    file << "\n</DataArray>\n";
+
+    file << "</Cells>\n";
+
+    // ---------------------
+    // POINT DATA (Displacement)
+    // ---------------------
+    file << "<PointData Vectors=\"Displacement\">\n";
+    file << "<DataArray type=\"Float32\" Name=\"Displacement\" NumberOfComponents=\"3\" format=\"ascii\">\n";
+
+    for (int i = 0; i < Nnodes; ++i)
+    {
+        file << displacement(3*i)   << " "
+             << displacement(3*i+1) << " "
+             << displacement(3*i+2) << "\n";
     }
 
-    // -------------------------
-    // CELLS
-    // -------------------------
-    vtk << "\nCELLS " << Nel_t << " " << Nel_t * 9 << "\n";
-    for (int e = 0; e < Nel_t; e++) {
-        vtk << 8 << " ";
-        for (int A = 0; A < 8; A++) {
-            vtk << elements[e].node[A] << " ";
-        }
-        vtk << "\n";
+    file << "</DataArray>\n</PointData>\n";
+
+    file << "</Piece>\n</UnstructuredGrid>\n</VTKFile>\n";
+}
+
+void write_pvd(
+    const std::string& filename,
+    const std::vector<std::string>& vtu_files,
+    const std::vector<float>& times)
+{
+    std::ofstream file(filename);
+
+    file << "<?xml version=\"1.0\"?>\n";
+    file << "<VTKFile type=\"Collection\" version=\"0.1\" byte_order=\"LittleEndian\">\n";
+    file << "<Collection>\n";
+
+    for (size_t i = 0; i < vtu_files.size(); ++i)
+    {
+        file << "<DataSet timestep=\"" << times[i]
+             << "\" group=\"\" part=\"0\" file=\""
+             << vtu_files[i] << "\"/>\n";
     }
 
-    // -------------------------
-    // CELL TYPES
-    // -------------------------
-    vtk << "\nCELL_TYPES " << Nel_t << "\n";
-    for (int e = 0; e < Nel_t; e++) {
-        vtk << 12 << "\n";   // 12 = VTK_HEXAHEDRON
-    }
-
-    // -------------------------
-    // DISPLACEMENT FIELD
-    // -------------------------
-    vtk << "\nPOINT_DATA " << Nt << "\n";
-    vtk << "VECTORS displacement float\n";
-
-    for (int i = 0; i < Nt; i++) {
-        vtk << D_full(3*i)     << " "
-            << D_full(3*i + 1) << " "
-            << D_full(3*i + 2) << "\n";
-    }
-
-    vtk.close();
-
-    std::cout << "VTK file written to: " << filename << std::endl;
+    file << "</Collection>\n</VTKFile>\n";
 }
 
 int main(){
@@ -226,7 +254,7 @@ int main(){
     float E = 1e3;
     float nu = 0.3;
     float mu = (E*nu)/((1 + nu)*(1 - 2*nu));
-    float lambda = E/(1 + 2*nu);
+    float lambda = E/(2*(1 + nu));
     float rho = 1.0;
 
     //Rayleigh Damping Constants
@@ -387,7 +415,7 @@ int main(){
 
                             Eigen::MatrixXf Jac = calculate_Jacobian_3D(e, xi1, xi2, xi3);
                             if(Jac.determinant() < 0){ 
-                                cout << "negative determinant!" << endl;
+                                throw std::runtime_error("Negative Jacobian detected");
                                 break;
                             }
                             Eigen::MatrixXf Jac_inv = Jac.inverse();
@@ -513,6 +541,7 @@ int main(){
     Eigen::MatrixXf CUU = a*MUU + b*KUU; //Rayleigh Damping Matrix
 
     //Initial conditions - initial displacement and velocity are 0 everywhere in the domain
+    Eigen::VectorXf D0_full = Eigen::VectorXf::Zero(Nt*Nsd);
     Eigen::VectorXf D0 = Eigen::VectorXf::Zero(unknownIndexes.size()); //initial displacement at unknown node locations
     Eigen::VectorXf Ddot0 = Eigen::VectorXf::Zero(unknownIndexes.size()); //initial velocity at unknown node locations
     Eigen::VectorXf Ddotdot0 = MUU.inverse()*(F - CUU*Ddot0 - KUU*D0); //initial acceleration at unknown node locations
@@ -527,6 +556,15 @@ int main(){
     int NT = 100; //number of time steps
 
     Eigen::LDLT<Eigen::MatrixXf> time_step_solver(MUU + (gamma*dt)*CUU + (beta*dt*dt)*KUU); //solver for time stepping
+
+    std::vector<std::string> solution_files;
+    std::vector<float> solution_timesteps;
+
+    //Initial solution txt file
+    std::ofstream D0_file("initial_solution.txt");
+    for(int i = 0 ; i < Nt ; i++){
+        D0_file << D0_full(3*i) << " " << D0_full(3*i + 1) << " " << D0_full(3*i + 2) << "\n";
+    }
 
     for(int t = 0 ; t < NT ; t++){
         Eigen::VectorXf Ddot_predictor = Ddot0 + (1-gamma)*dt*Ddotdot0;
@@ -546,23 +584,33 @@ int main(){
         }
 
         //Visualization - write solution at current time step to file
+        std::string filename = "solutions/solution_" + std::to_string(t) + ".vtu";
+        write_vtu(filename, nodes, elements, D_full);
+        solution_files.push_back(filename);
+        solution_timesteps.push_back(t*dt);
 
+        //write txt files at some timesteps
+        if(t == 2 || t == 5 || t == 7 || t == 10 || t == 12 || t == 15 || t == 17 || t == 20 || t == 25 || t == 50 || t ==75){
+            std::string filename = "solutions/solution_" + std::to_string(t) + ".txt";
+            std::ofstream D_file(filename);
+            for(int i = 0 ; i < Nt ; i++){
+                D_file << D_full(3*i) << " " << D_full(3*i + 1) << " " << D_full(3*i + 2) << "\n";
+            }
+        }
 
         //update for next time step
-        D0 = D;
+        D0 = DU;
         Ddot0 = Ddot;
         Ddotdot0 = Ddotdot;
     }
 
-    //construct final solution vector including known values at dirischlet boundary
-    
+    // Write simulation pvd file
+    write_pvd("final_solution.pvd", solution_files, solution_timesteps);
 
     //write solution to file
     std::ofstream D_file("final_solution.txt");
     for(int i = 0 ; i < Nt ; i++){
         D_file << D_full(3*i) << " " << D_full(3*i + 1) << " " << D_full(3*i + 2) << "\n";
     }
-
-    
 
 }

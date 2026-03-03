@@ -226,7 +226,7 @@ int main(){
     float E = 1e3;
     float nu = 0.3;
     float mu = (E*nu)/((1 + nu)*(1 - 2*nu));
-    float lambda = E/(1 + 2*nu);
+    float lambda = E/(2*(1 + nu));
 
     //domain
     float x1_ll = 0.0;
@@ -379,7 +379,7 @@ int main(){
 
                             Eigen::MatrixXf Jac = calculate_Jacobian_3D(e, xi1, xi2, xi3);
                             if(Jac.determinant() < 0){ 
-                                cout << "negative determinant!" << endl;
+                                throw std::runtime_error("Negative Jacobian detected");
                                 break;
                             }
                             Eigen::MatrixXf Jac_inv = Jac.inverse();
